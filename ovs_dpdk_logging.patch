@@ -1,0 +1,98 @@
+--- ./openvswitch-2.7.0.old/lib/dpdk.c	2017-02-24 12:56:16.749982407 +0530
++++ ./openvswitch-2.7.0.dbg/lib/dpdk.c	2018-02-22 17:30:32.863631057 +0530
+@@ -17,16 +17,17 @@
+ #include <config.h>
+ #include "dpdk.h"
+ 
++#include <stdio.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <getopt.h>
+ 
+ #include <rte_memzone.h>
++#include <rte_log.h>
+ #ifdef DPDK_PDUMP
+ #include <rte_mempool.h>
+ #include <rte_pdump.h>
+ #endif
+-
+ #include "dirs.h"
+ #include "fatal-signal.h"
+ #include "netdev-dpdk.h"
+@@ -36,6 +37,7 @@
+ 
+ VLOG_DEFINE_THIS_MODULE(dpdk);
+ 
++static FILE *log_stream = NULL;       /* Stream for DPDK log redirection */
+ static char *vhost_sock_dir = NULL;   /* Location of vhost-user sockets */
+ 
+ static int
+@@ -262,6 +264,41 @@
+     free(dpdk_argv);
+ }
+ 
++static ssize_t
++dpdk_log_write(void *c OVS_UNUSED, const char *buf, size_t size)
++{
++    char *str = xmemdup0(buf, size);
++
++    switch (rte_log_cur_msg_loglevel()) {
++        case RTE_LOG_DEBUG:
++            VLOG_INFO("%s", str);
++            break;
++        case RTE_LOG_INFO:
++        case RTE_LOG_NOTICE:
++            VLOG_INFO("%s", str);
++            break;
++        case RTE_LOG_WARNING:
++            VLOG_WARN("%s", str);
++            break;
++        case RTE_LOG_ERR:
++            VLOG_ERR("%s", str);
++            break;
++        case RTE_LOG_CRIT:
++        case RTE_LOG_ALERT:
++        case RTE_LOG_EMERG:
++            VLOG_EMER("%s", str);
++            break;
++        default:
++            OVS_NOT_REACHED();
++    }
++
++    free(str);
++    return size;
++}
++
++static cookie_io_functions_t dpdk_log_func = {
++    .write = dpdk_log_write,
++};
+ static void
+ dpdk_init__(const struct smap *ovs_other_config)
+ {
+@@ -273,6 +310,15 @@
+     cpu_set_t cpuset;
+     char *sock_dir_subcomponent;
+ 
++    log_stream = fopencookie(NULL, "w+", dpdk_log_func);
++    if (log_stream == NULL) {
++        VLOG_ERR("Can't redirect DPDK log: %s.", ovs_strerror(errno));
++    } else {
++        setbuf(log_stream, NULL);
++        rte_openlog_stream(log_stream);
++		rte_set_log_level(RTE_LOG_DEBUG);
++    }
++
+     if (process_vhost_flags("vhost-sock-dir", ovs_rundir(),
+                             NAME_MAX, ovs_other_config,
+                             &sock_dir_subcomponent)) {
+@@ -368,6 +414,10 @@
+     if (result < 0) {
+         ovs_abort(result, "Cannot init EAL");
+     }
++
++	rte_set_log_level(RTE_LOG_DEBUG);
++	VLOG_INFO("%s() dpdk log level: 0x%x\n", __func__, rte_get_log_level());
++
+     argv_release(argv, argv_to_release, argc);
+ 
+     /* Set the main thread affinity back to pre rte_eal_init() value */
